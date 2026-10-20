@@ -1,0 +1,136 @@
+name: release
+
+# Releasing is driven by conventional commits via uppt: a push to main opens a
+# draft release PR with the version bump, merging that PR tags it and cuts the
+# GitHub release, and the tag dispatches this workflow again to build the zips.
+# uppt's own `pack`/`publish` jobs are replaced by `assets` below — this is an
+# extension, not an npm package.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types:
+      - closed
+    branches:
+      - main
+  # Required for the chained dispatch from the `release` job, and to rebuild the
+  # assets for an existing tag.
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  # Parse conventional commits since the last tag, push a `release/vX.Y.Z`
+  # branch with the bumped `package.json` version, and open or update a draft
+  # release PR. WXT copies that version into the manifest, so the PR is the only
+  # place a version is edited.
+  pr:
+    if: |
+      github.event_name == 'push'
+      && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      && !github.event.repository.fork
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the release branch and delete superseded ones
+      pull-requests: write # open the release PR, update its body, close superseded ones
+    steps:
+      - uses: danielroe/uppt/pr@7bcfb5397c37202ef882363f755423130419d28a # v0.5.5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # The release PR was merged: tag the squash commit, cut a GitHub release from
+  # the PR body, and dispatch this workflow on the new tag. The `release/v`
+  # head-ref guard keeps ordinary PR merges out of here.
+  release:
+    if: |
+      github.event_name == 'pull_request'
+      && github.event.pull_request.merged == true
+      && startsWith(github.event.pull_request.head.ref, 'release/v')
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && !github.event.repository.fork
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write # push the tag, create the release
+      actions: write # dispatch this workflow on the tag
+    steps:
+      - uses: danielroe/uppt/release@7bcfb5397c37202ef882363f755423130419d28a # v0.5.5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Where uppt's `pack` and `publish` jobs would go. The chained dispatch from
+  # `release` lands here as a `workflow_dispatch` on the `vX.Y.Z` tag; manual
+  # recovery uses the same path (Run workflow -> pick a `v*` tag).
+  #
+  # Store submission is deliberately not wired up yet; this only attaches the
+  # zips to the release. See "Releasing" in CONTRIBUTING.md to turn it on.
+  assets:
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: assets-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: write # attach the zips to the release
+    env:
+      TAG: ${{ github.ref_name }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # These zips are what people install, so the check runs again here rather
+      # than trusting the ci run on the release PR.
+      - name: Type check
+        run: pnpm compile
+
+      # `zip:firefox` also emits the sources zip AMO will want for review once
+      # submission is wired up; harmless to keep producing it in the meantime.
+      - name: Build and zip
+        run: |
+          pnpm zip
+          pnpm zip:firefox
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: extension-zips-${{ github.ref_name }}
+          path: .output/*.zip
+          if-no-files-found: error
+          include-hidden-files: true
+
+      # `uppt/release` has already created the release, so this only creates one
+      # when the tag was dispatched by hand.
+      - name: Attach the zips to the GitHub release
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "$TAG" --generate-notes
+          gh release upload "$TAG" \
+            .output/*-chrome.zip \
+            .output/*-firefox.zip \
+            --clobber
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Summarise
+        run: |
+          {
+            echo "### ${TAG}"
+            echo ""
+            echo "Zips attached to [the release](${{ github.server_url }}/${{ github.repository }}/releases/tag/${TAG})."
+            echo "Store submission is not wired up yet."
+          } >> "$GITHUB_STEP_SUMMARY"
