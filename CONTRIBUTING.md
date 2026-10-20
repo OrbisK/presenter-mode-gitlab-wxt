@@ -43,7 +43,10 @@ and re-add the extension or set it at `chrome://extensions/shortcuts`.
 `gitlab.com` is declared in the manifest. Every other origin is opt-in: it is stored in
 `sync:instanceOrigins`, granted through `optional_host_permissions`, and the background registers
 one dynamic content script (`presenter-mode-instances`) covering every origin it holds permission
-for — re-synced on startup, install, permission changes and list changes. The registration names
+for — re-synced on startup, install, permission changes and list changes. That registration only
+applies to pages loaded afterwards, so on `permissions.onAdded` the background also injects the
+script into tabs already open on the granted origin; the content script guards against running
+twice in one page. The registration names
 the emitted bundle paths literally, so renaming `entrypoints/content/` means updating
 `entrypoints/background.ts` too.
 

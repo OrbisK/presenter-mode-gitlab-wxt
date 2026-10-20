@@ -115,7 +115,6 @@ async function remove(origin: string) {
       </form>
 
       <p v-if="error" class="danger">{{ error }}</p>
-      <p class="muted hint">Open tabs on a newly added instance need a reload.</p>
     </section>
 
     <footer class="footer muted">
@@ -164,9 +163,6 @@ section {
 .add-row input {
   flex: 1;
   min-width: 0;
-}
-.hint {
-  font-size: 0.85em;
 }
 .footer {
   margin-top: 2rem;

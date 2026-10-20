@@ -10,6 +10,8 @@ export default defineContentScript({
   runAt: 'document_start',
   async main() {
     const root = document.documentElement;
+    // Injected into open tabs when an instance is granted; never run twice in one page.
+    if (document.getElementById('gl-presenter-indicator')) return;
 
     // Appended to <html> because <body> may not exist yet at document_start.
     const indicator = document.createElement('button');

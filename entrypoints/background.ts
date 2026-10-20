@@ -2,8 +2,8 @@
  * Bundle paths WXT emits for `entrypoints/content/`. The runtime registration
  * below has to name them literally.
  */
-const CONTENT_SCRIPT_JS = 'content-scripts/content.js';
-const CONTENT_SCRIPT_CSS = 'content-scripts/content.css';
+const CONTENT_SCRIPT_JS = '/content-scripts/content.js';
+const CONTENT_SCRIPT_CSS = '/content-scripts/content.css';
 const REGISTRATION_ID = 'presenter-mode-instances';
 
 let lastError: string | undefined;
@@ -27,7 +27,10 @@ export default defineBackground(() => {
   void syncRegistration();
   browser.runtime.onInstalled.addListener(() => void syncRegistration());
   browser.runtime.onStartup.addListener(() => void syncRegistration());
-  browser.permissions.onAdded.addListener(() => void syncRegistration());
+  browser.permissions.onAdded.addListener(async ({ origins = [] }) => {
+    await syncRegistration();
+    await injectIntoOpenTabs(origins);
+  });
   browser.permissions.onRemoved.addListener(() => void syncRegistration());
   instanceOrigins.watch(() => void syncRegistration());
 
@@ -40,6 +43,31 @@ export default defineBackground(() => {
     return true; // keep the message channel open for the async response
   });
 });
+
+/**
+ * A registered content script only applies to pages loaded afterwards, so tabs
+ * already open on a newly granted instance are injected directly — no reload,
+ * which would throw away whatever the user had typed into a comment.
+ */
+async function injectIntoOpenTabs(grantedPatterns: string[]): Promise<void> {
+  const allowed = new Set(
+    [GITLAB_COM_ORIGIN, ...(await instanceOrigins.getValue())].map(originToMatchPattern),
+  );
+  const patterns = grantedPatterns.filter((pattern) => allowed.has(pattern));
+  if (patterns.length === 0) return;
+
+  for (const tab of await browser.tabs.query({ url: patterns })) {
+    if (tab.id == null) continue;
+    const target = { tabId: tab.id };
+    try {
+      await browser.scripting.insertCSS({ target, files: [CONTENT_SCRIPT_CSS] });
+      await browser.scripting.executeScript({ target, files: [CONTENT_SCRIPT_JS] });
+    } catch (cause) {
+      // Discarded or still-loading tabs can refuse; they pick the script up on next load.
+      console.warn('could not inject into tab', tab.url, cause);
+    }
+  }
+}
 
 /**
  * Runs are serialized: several triggers above fire together (startup alongside

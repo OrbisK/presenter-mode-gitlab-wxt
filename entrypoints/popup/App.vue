@@ -1,13 +1,16 @@
 <script lang="ts" setup>
-import { onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 
-type InstanceStatus = 'checking' | 'not-a-page' | 'enabled' | 'available' | 'granting' | 'granted';
+type InstanceStatus = 'checking' | 'not-a-page' | 'enabled' | 'available' | 'granting';
 
 const enabled = ref(false);
 const origin = ref<string | null>(null);
 const instance = ref<InstanceStatus>('checking');
 const error = ref<string | null>(null);
 let unwatch: (() => void) | undefined;
+
+/** Presenter mode does nothing on a tab the content script cannot run on. */
+const supported = computed(() => instance.value === 'enabled');
 
 onMounted(async () => {
   enabled.value = await presenterMode.getValue();
@@ -34,8 +37,10 @@ async function enableHere() {
   error.value = null;
   instance.value = 'granting';
   try {
+    // The background injects into this tab once access is granted, so the toggle
+    // works right away without a reload.
     if (await enableInstance(origin.value)) {
-      instance.value = 'granted';
+      instance.value = 'enabled';
     } else {
       instance.value = 'available';
       error.value = 'Permission was not granted.';
@@ -44,12 +49,6 @@ async function enableHere() {
     instance.value = 'available';
     error.value = cause instanceof Error ? cause.message : String(cause);
   }
-}
-
-async function reloadTab() {
-  const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-  if (tab?.id != null) await browser.tabs.reload(tab.id);
-  window.close();
 }
 
 function openOptions() {
@@ -61,7 +60,12 @@ function openOptions() {
 <template>
   <div class="popup">
     <h1>Presenter mode</h1>
-    <button :class="{ on: enabled }" @click="toggle">
+    <button
+      :class="{ on: enabled && supported }"
+      :disabled="!supported"
+      :title="supported ? undefined : 'Not available on this page'"
+      @click="toggle"
+    >
       {{ enabled ? 'On' : 'Off' }}
     </button>
     <p class="muted hint">Shortcut: <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd></p>
@@ -75,10 +79,6 @@ function openOptions() {
     <template v-else>
       <p class="mono muted">{{ origin }}</p>
       <p v-if="instance === 'enabled'">Active on this instance.</p>
-      <template v-else-if="instance === 'granted'">
-        <p>Enabled. Reload the tab to apply.</p>
-        <button @click="reloadTab">Reload tab</button>
-      </template>
       <template v-else>
         <p class="muted">Not enabled on this instance.</p>
         <button :disabled="instance === 'granting'" @click="enableHere">
@@ -102,6 +102,10 @@ function openOptions() {
 h1 {
   font-size: 1.2em;
   margin: 0 0 0.8em;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 button.on {
   background-color: #dd2b0e;
